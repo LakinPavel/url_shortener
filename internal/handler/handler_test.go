@@ -14,14 +14,16 @@ import (
 )
 
 type mockStorage struct {
-	mu   sync.RWMutex
-	data map[string]string
-	err  error
+	mu          sync.RWMutex
+	shortToOrig map[string]string
+	origToShort map[string]string
+	err         error
 }
 
 func newMockStorage() *mockStorage {
 	return &mockStorage{
-		data: make(map[string]string),
+		shortToOrig: make(map[string]string),
+		origToShort: make(map[string]string),
 	}
 }
 
@@ -30,8 +32,15 @@ func (m *mockStorage) Save(ctx context.Context, originalURL, shortURL string) (s
 		return "", m.err
 	}
 	m.mu.Lock()
-	m.data[shortURL] = originalURL
-	m.mu.Unlock()
+	defer m.mu.Unlock()
+
+	// Имитация коллизии: если shortURL занят ДРУГИМ оригинальным URL
+	if existingOrig, exists := m.shortToOrig[shortURL]; exists && existingOrig != originalURL {
+		return "", storage.ErrCollision
+	}
+
+	m.shortToOrig[shortURL] = originalURL
+	m.origToShort[originalURL] = shortURL
 	return shortURL, nil
 }
 
@@ -39,13 +48,29 @@ func (m *mockStorage) GetOriginal(ctx context.Context, shortURL string) (string,
 	if m.err != nil {
 		return "", m.err
 	}
-	m.mu.Lock()
-	original, exists := m.data[shortURL]
-	m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	original, exists := m.shortToOrig[shortURL]
 	if !exists {
 		return "", errors.New("not found")
 	}
 	return original, nil
+}
+
+// Добавляем недостающий метод GetShort
+func (m *mockStorage) GetShort(ctx context.Context, originalURL string) (string, error) {
+	if m.err != nil {
+		return "", m.err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	short, exists := m.origToShort[originalURL]
+	if !exists {
+		return "", nil // Если не нашли, возвращаем пустую строку (без ошибки)
+	}
+	return short, nil
 }
 
 var _ storage.Storage = (*mockStorage)(nil)
@@ -103,7 +128,9 @@ func TestHandler_GetURL(t *testing.T) {
 	mockStore := newMockStorage()
 	h := New(mockStore)
 
-	mockStore.data["1234567890"] = "https://golang.org"
+	// Правильное заполнение мока перед тестом
+	mockStore.shortToOrig["1234567890"] = "https://golang.org"
+	mockStore.origToShort["https://golang.org"] = "1234567890"
 
 	t.Run("success", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/1234567890", nil)

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -9,6 +10,8 @@ import (
 	"github.com/LakinPavel/url_shortener.git/internal/generator"
 	"github.com/LakinPavel/url_shortener.git/internal/storage"
 )
+
+const maxRetries = 5
 
 type Handler struct {
 	store storage.Storage
@@ -19,9 +22,7 @@ func New(store storage.Storage) *Handler {
 }
 
 func (h *Handler) PostURL(w http.ResponseWriter, r *http.Request) {
-	slog.Debug("incoming POST request", "method", r.Method, "path", r.URL.Path)
 	if r.Method != http.MethodPost {
-		slog.Warn("method not allowed", "method", r.Method)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -30,22 +31,46 @@ func (h *Handler) PostURL(w http.ResponseWriter, r *http.Request) {
 		URL string `json:"url"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.URL == "" {
-		slog.Warn("invalid request payload", "error", err, "url_empty", req.URL == "")
 		http.Error(w, "Invalid request payload", http.StatusBadRequest)
 		return
 	}
 
-	shortURL := generator.GenerateShortURL(req.URL)
-	finalShortURL, err := h.store.Save(r.Context(), req.URL, shortURL)
-	if err != nil {
-		slog.Error("failed to save URL to storage", "error", err, "original_url", req.URL)
+	existingShort, err := h.store.GetShort(r.Context(), req.URL)
+	if err == nil && existingShort != "" {
+		slog.Info("URL already shortened", "short", existingShort, "original", req.URL)
+		renderJSON(w, map[string]string{"short_url": existingShort})
+		return
+	}
+
+	var shortURL string
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		shortURL = generator.GenerateShortURL(req.URL, attempt)
+
+		finalShortURL, err := h.store.Save(r.Context(), req.URL, shortURL)
+
+		if err == nil {
+			slog.Info("URL shortened successfully", "short", finalShortURL, "original", req.URL)
+			renderJSON(w, map[string]string{"short_url": finalShortURL})
+			return
+		}
+
+		if errors.Is(err, storage.ErrCollision) {
+			slog.Warn("collision detected, retrying", "attempt", attempt, "shortURL", shortURL)
+			continue
+		}
+
+		slog.Error("storage error", "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	slog.Info("URL shortened successfully", "short", finalShortURL, "original", req.URL)
+	slog.Error("failed to generate unique URL after retries", "url", req.URL)
+	http.Error(w, "Could not generate unique short URL", http.StatusInternalServerError)
+}
+
+func renderJSON(w http.ResponseWriter, data any) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"short_url": finalShortURL})
+	json.NewEncoder(w).Encode(data)
 }
 
 func isValid(s string) bool {
@@ -81,7 +106,5 @@ func (h *Handler) GetURL(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("redirecting to original URL", "short", shortURL, "original", originalURL)
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"original_url": originalURL})
+	renderJSON(w, map[string]string{"original_url": originalURL})
 }
