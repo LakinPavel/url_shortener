@@ -7,12 +7,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/LakinPavel/url_shortener.git/internal/storage"
 )
 
 type mockStorage struct {
+	mu   sync.RWMutex
 	data map[string]string
 	err  error
 }
@@ -27,7 +29,9 @@ func (m *mockStorage) Save(ctx context.Context, originalURL, shortURL string) (s
 	if m.err != nil {
 		return "", m.err
 	}
+	m.mu.Lock()
 	m.data[shortURL] = originalURL
+	m.mu.Unlock()
 	return shortURL, nil
 }
 
@@ -35,7 +39,9 @@ func (m *mockStorage) GetOriginal(ctx context.Context, shortURL string) (string,
 	if m.err != nil {
 		return "", m.err
 	}
+	m.mu.Lock()
 	original, exists := m.data[shortURL]
+	m.mu.Unlock()
 	if !exists {
 		return "", errors.New("not found")
 	}
@@ -137,4 +143,37 @@ func TestHandler_GetURL(t *testing.T) {
 			t.Errorf("expected status %d, got %d", http.StatusBadRequest, rec.Code)
 		}
 	})
+}
+
+func TestHandler_ConcurrentLoad(t *testing.T) {
+	mockStore := newMockStorage()
+	h := New(mockStore)
+
+	server := httptest.NewServer(http.HandlerFunc(h.PostURL))
+	defer server.Close()
+
+	var wg sync.WaitGroup
+	workers := 100
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+
+		go func(workerID int) {
+			defer wg.Done()
+
+			body := bytes.NewBufferString(`{"url": "https://highload.com"}`)
+			resp, err := http.Post(server.URL, "application/json", body)
+			if err != nil {
+				t.Errorf("Worker %d failed to send request: %v", workerID, err)
+				return
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("Worker %d got status: %d", workerID, resp.StatusCode)
+			}
+		}(i)
+	}
+
+	wg.Wait()
 }
