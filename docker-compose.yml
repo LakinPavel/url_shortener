@@ -2,6 +2,11 @@ version: '3.8'
 services:
   db:
     image: postgres:15-alpine
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U user -d shortener" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     environment:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
@@ -14,5 +19,6 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      - db
-    command: ["-storage=postgres", "-dsn=postgres://user:password@db:5432/shortener?sslmode=disable"]
+      db:
+        condition: service_healthy
+    command: [ "-storage=postgres", "-dsn=postgres://user:password@db:5432/shortener?sslmode=disable" ]

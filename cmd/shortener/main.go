@@ -36,14 +36,13 @@ func setupLogger(levelStr string) {
 
 func main() {
 	logLevel := flag.String("log-level", "info", "log level: debug, info, warn, error")
+	storageType := flag.String("storage", "memory", "storage type: 'memory' or 'postgres'")
+	dsn := flag.String("dsn", "postgres://user:pass@localhost:5432/shortener?sslmode=disable", "postgres dsn")
 	flag.Parse()
 
 	setupLogger(*logLevel)
 
 	slog.Info("Starting server", "level", *logLevel)
-	storageType := flag.String("storage", "memory", "storage type: 'memory' or 'postgres'")
-	dsn := flag.String("dsn", "postgres://user:pass@localhost:5432/shortener?sslmode=disable", "postgres dsn")
-	flag.Parse()
 
 	var store storage.Storage
 	var err error
